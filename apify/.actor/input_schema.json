@@ -1,0 +1,7 @@
+{
+  "title": "eBay Seller MCP",
+  "type": "object",
+  "schemaVersion": 1,
+  "description": "This Actor runs in Standby mode as an MCP server. Configure your MCP client with the Actor's /mcp URL and your eBay credentials as headers — see the README.",
+  "properties": {}
+}

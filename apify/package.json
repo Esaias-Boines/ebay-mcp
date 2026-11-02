@@ -1,0 +1,10 @@
+{
+  "name": "ebay-seller-mcp-actor",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Apify Standby wrapper that hosts the eBay MCP server with pay-per-event billing.",
+  "main": "main.mjs",
+  "scripts": { "start": "node main.mjs" },
+  "dependencies": { "apify": "^3.7.2" }
+}

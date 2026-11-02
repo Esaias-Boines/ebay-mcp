@@ -1,0 +1,12 @@
+{
+  "tool-call": {
+    "eventTitle": "Read tool call",
+    "eventDescription": "One successful read-only eBay tool call (get/list/search). Failed calls are not charged.",
+    "eventPriceUsd": 0.01
+  },
+  "write-tool-call": {
+    "eventTitle": "Write tool call",
+    "eventDescription": "One successful eBay tool call that creates, updates or deletes data (e.g. publish offer, update price, ship order). Failed calls are not charged.",
+    "eventPriceUsd": 0.03
+  }
+}

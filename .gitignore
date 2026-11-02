@@ -230,6 +230,11 @@ Taskfile.yml
 !/CONTEXT.md
 !/LANGUAGE.md
 !/PROJECT.md
+!/apify/.actor/
+!/apify/.actor/*.json
+!/apify/package.json
+!/apify/package-lock.json
+!/apify/README.md
 
 # Kiro CLI agent config (local)
 .kiro

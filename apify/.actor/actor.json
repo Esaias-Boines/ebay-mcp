@@ -1,0 +1,14 @@
+{
+  "actorSpecification": 1,
+  "name": "ebay-seller-mcp",
+  "title": "eBay Seller MCP Server — manage listings, orders & marketing from any AI agent",
+  "description": "Hosted MCP server with ~300 eBay Sell API tools (inventory, offers, orders, fulfillment, returns, marketing campaigns, analytics, messages). Connect Claude, Cursor, ChatGPT or any MCP client with your own eBay credentials. Pay per tool call.",
+  "version": "0.1",
+  "buildTag": "latest",
+  "usesStandbyMode": true,
+  "webServerMcpPath": "/mcp",
+  "dockerfile": "../Dockerfile",
+  "dockerContextDir": "../..",
+  "readme": "../README.md",
+  "input": "./input_schema.json"
+}
