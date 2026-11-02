@@ -124,6 +124,24 @@ These variables apply when running the HTTP MCP server (`node build/serverHttp.j
 - **Required:** No
 - **Security:** ⚠️ Keep secret. `/health` remains unauthenticated for probes.
 
+#### `MCP_PATH`
+
+- **Description:** Route that serves the MCP endpoint (POST/GET/DELETE). Default `/`. Set `mcp` to serve at `/mcp`, as most hosted MCP platforms expect.
+- **Required:** No
+
+#### `MCP_SESSION_IDLE_TIMEOUT_MS`
+
+- **Description:** Close MCP sessions that have been idle for longer than this many milliseconds. Unset means sessions stay open until the client closes them. Recommended for long-running hosted servers, e.g. `1800000` (30 minutes).
+- **Required:** No
+
+#### Embedding: per-session credentials and tool-call metering
+
+If you embed the HTTP server through `createHttpMcpApp(config)`, three more options are available:
+
+- **`resolveSessionEbayConfig(req)`:** builds the eBay config for each new session, for example from per-user request headers. Sessions created this way keep refreshed tokens in memory only, through `MemoryCredentialStore`, and never write `.env`. If the resolver throws, the session is rejected with HTTP 400.
+- **`onToolCall({ name, ok, durationMs })`:** called after every eBay tool call, for metering or billing. A failing observer is logged and never changes the tool result.
+- **`serverInfo`:** overrides the advertised `name`, `title` and `websiteUrl`.
+
 ### Required: User Refresh Token (For OAuth Flow)
 
 #### `EBAY_USER_REFRESH_TOKEN`

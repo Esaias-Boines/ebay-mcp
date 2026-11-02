@@ -8,10 +8,12 @@ import { isInitializeRequest, type Implementation } from '@modelcontextprotocol/
 import { dirname, join } from 'path';
 import { fileURLToPath } from 'url';
 import { createBearerAuthMiddleware } from '@/auth/oauthMiddleware.js';
+import { EbaySellerApi } from '@/api/index.js';
+import { MemoryCredentialStore } from '@/auth/credentialSession.js';
 import { createMetadataRouter, getProtectedResourceMetadataUrl } from '@/auth/oauthMetadata.js';
 import { TokenVerifier } from '@/auth/tokenVerifier.js';
 import { getDefaultScopes, getEbayConfig } from '@/config/environment.js';
-import { createEbayMcpRuntime } from '@/mcp/runtime.js';
+import { createEbayMcpRuntime, type ToolCallObserver } from '@/mcp/runtime.js';
 import type { EbayConfig } from '@/types/ebay.js';
 import { getErrorMessage } from '@/utils/errors.js';
 import { serverLogger } from '@/utils/logger.js';
@@ -55,6 +57,24 @@ export interface HttpTransportConfig {
    * `Authorization: Bearer <token>` and skip the OAuth token verifier.
    */
   staticAuthToken?: string;
+  /** Route that serves MCP (POST/GET/DELETE). Defaults to `/`. Sourced from `MCP_PATH`. */
+  mcpPath?: string;
+  /**
+   * Closes MCP sessions idle for longer than this many milliseconds. Disabled when
+   * unset. Sourced from `MCP_SESSION_IDLE_TIMEOUT_MS`.
+   */
+  sessionIdleTimeoutMs?: number;
+  /**
+   * Builds the eBay config for a new session from its `initialize` request, e.g. from
+   * per-user headers in a hosted deployment. Return `undefined` to fall back to the
+   * environment config. Throw to reject the session with HTTP 400. Sessions created
+   * this way keep refreshed tokens in memory only.
+   */
+  resolveSessionEbayConfig?: (req: Request) => EbayConfig | undefined;
+  /** Observer called after every eBay tool call in every session. */
+  onToolCall?: ToolCallObserver;
+  /** Overrides the advertised MCP server name, title and website (rebranded deployments). */
+  serverInfo?: Partial<Pick<Implementation, 'name' | 'title' | 'websiteUrl'>>;
 }
 
 const getProjectRoot = (): string => {
@@ -91,7 +111,25 @@ export const createHttpTransportConfigFromEnv = (env: NodeJS.ProcessEnv): HttpTr
   authEnabled: env.OAUTH_ENABLED !== 'false',
   projectRoot: getProjectRoot(),
   staticAuthToken: env.MCP_AUTH_TOKEN,
+  mcpPath: normalizeMcpPath(env.MCP_PATH),
+  sessionIdleTimeoutMs: Number(env.MCP_SESSION_IDLE_TIMEOUT_MS) || undefined,
 });
+
+/**
+ * Normalize an MCP route path to a leading-slash form without a trailing slash.
+ *
+ * @param path - Raw path such as `mcp`, `/mcp/` or undefined.
+ * @returns Normalized path, `/` when empty.
+ *
+ * @example
+ * ```ts
+ * normalizeMcpPath('mcp/'); // '/mcp'
+ * ```
+ */
+export const normalizeMcpPath = (path: string | undefined): string => {
+  const trimmed = (path ?? '').trim().replace(/^\/+|\/+$/g, '');
+  return trimmed ? `/${trimmed}` : '/';
+};
 
 /**
  * Build the public server URL used for MCP metadata and OAuth audience checks.
@@ -128,15 +166,18 @@ export const getAuthServerMetadataUrl = (config: Pick<HttpTransportConfig, 'oaut
   return `${baseUrl}/.well-known/oauth-authorization-server`;
 };
 
-function createServerConfig(serverUrl: string): Implementation {
+function createServerConfig(
+  serverUrl: string,
+  overrides: HttpTransportConfig['serverInfo'] = {},
+): Implementation {
   const iconBaseUrl = `${serverUrl}/icons`;
   const iconSizes = ['16x16', '32x32', '48x48', '128x128', '256x256', '512x512', '1024x1024'];
 
   return {
-    name: 'ebay-mcp',
+    name: overrides.name ?? 'ebay-mcp',
     version: getVersion(),
-    title: 'eBay API MCP Server',
-    websiteUrl: 'https://github.com/YosefHayim/ebay-mcp',
+    title: overrides.title ?? 'eBay API MCP Server',
+    websiteUrl: overrides.websiteUrl ?? 'https://github.com/YosefHayim/ebay-mcp',
     icons: iconSizes.map((size) => ({
       src: `${iconBaseUrl}/${size}.png`,
       mimeType: 'image/png',
@@ -145,9 +186,21 @@ function createServerConfig(serverUrl: string): Implementation {
   };
 }
 
-async function createMcpServer(serverUrl: string): Promise<McpServer> {
+async function createMcpServer(
+  serverUrl: string,
+  config: HttpTransportConfig,
+  sessionEbayConfig?: EbayConfig,
+): Promise<McpServer> {
   const runtime = createEbayMcpRuntime({
-    serverConfig: createServerConfig(serverUrl),
+    serverConfig: createServerConfig(serverUrl, config.serverInfo),
+    onToolCall: config.onToolCall,
+    ...(sessionEbayConfig
+      ? {
+          api: new EbaySellerApi(sessionEbayConfig, {
+            credentialStore: new MemoryCredentialStore(),
+          }),
+        }
+      : {}),
   });
 
   const initialized = await Effect.runPromise(
@@ -292,6 +345,42 @@ export const createHttpMcpApp = async (
 
   const authMiddleware = await createAuthMiddleware(config, serverUrl);
   const transports = new Map<string, StreamableHTTPServerTransport>();
+  const lastSeen = new Map<string, number>();
+  const touch = (sessionId: string | undefined) => {
+    if (sessionId) {
+      lastSeen.set(sessionId, Date.now());
+    }
+  };
+
+  if (config.sessionIdleTimeoutMs) {
+    const idleTimeoutMs = config.sessionIdleTimeoutMs;
+    const sweep = setInterval(
+      () => {
+        const now = Date.now();
+        for (const [sessionId, seenAt] of lastSeen) {
+          if (now - seenAt > idleTimeoutMs) {
+            lastSeen.delete(sessionId);
+            const idle = transports.get(sessionId);
+            transports.delete(sessionId);
+            serverLogger.info(`Closing idle MCP session: ${sessionId}`);
+            void idle?.close();
+          }
+        }
+      },
+      Math.min(idleTimeoutMs, 60_000),
+    );
+    sweep.unref();
+  }
+
+  const resolveSessionConfig = (req: Request) =>
+    Effect.runSync(
+      Effect.either(
+        Effect.try({
+          try: () => config.resolveSessionEbayConfig?.(req),
+          catch: (error) => error,
+        }),
+      ),
+    );
 
   const mcpPostHandler = async (req: Request, res: Response): Promise<void> => {
     const sessionHeader = req.headers['mcp-session-id'];
@@ -300,11 +389,26 @@ export const createHttpMcpApp = async (
 
     if (sessionId && transports.has(sessionId)) {
       transport = transports.get(sessionId)!;
+      touch(sessionId);
     } else if (!sessionId && isInitializeRequest(req.body)) {
+      const sessionConfig = resolveSessionConfig(req);
+      if (Either.isLeft(sessionConfig)) {
+        res.status(400).json({
+          jsonrpc: '2.0',
+          error: {
+            code: -32_000,
+            message: `Bad Request: ${getErrorMessage(sessionConfig.left, 'invalid session credentials')}`,
+          },
+          id: null,
+        });
+        return;
+      }
+
       transport = new StreamableHTTPServerTransport({
         sessionIdGenerator: () => randomUUID(),
         onsessioninitialized: (initializedSessionId) => {
           transports.set(initializedSessionId, transport);
+          touch(initializedSessionId);
           serverLogger.info(`New MCP session initialized: ${initializedSessionId}`);
         },
       });
@@ -312,11 +416,12 @@ export const createHttpMcpApp = async (
       transport.onclose = () => {
         if (transport.sessionId) {
           transports.delete(transport.sessionId);
+          lastSeen.delete(transport.sessionId);
           serverLogger.info(`MCP session closed: ${transport.sessionId}`);
         }
       };
 
-      const server = await createMcpServer(serverUrl);
+      const server = await createMcpServer(serverUrl, config, sessionConfig.right);
       await server.connect(transport);
     } else {
       res.status(400).json({
@@ -343,6 +448,7 @@ export const createHttpMcpApp = async (
     }
 
     const transport = transports.get(sessionId)!;
+    touch(sessionId);
     await transport.handleRequest(req, res);
   };
 
@@ -351,9 +457,10 @@ export const createHttpMcpApp = async (
     ? [authMiddleware, handleSessionRequest]
     : [handleSessionRequest];
 
-  app.post('/', ...mcpMiddleware);
-  app.get('/', ...sessionMiddleware);
-  app.delete('/', ...sessionMiddleware);
+  const mcpPath = normalizeMcpPath(config.mcpPath);
+  app.post(mcpPath, ...mcpMiddleware);
+  app.get(mcpPath, ...sessionMiddleware);
+  app.delete(mcpPath, ...sessionMiddleware);
 
   return app;
 };

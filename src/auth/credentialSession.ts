@@ -93,6 +93,30 @@ export class DotEnvCredentialStore implements CredentialStore {
 }
 
 /**
+ * Credential store that keeps refreshed tokens in process memory only.
+ *
+ * Use it for hosted or multi-tenant deployments where each session brings its own
+ * eBay credentials and nothing may be written to disk.
+ */
+export class MemoryCredentialStore implements CredentialStore {
+  /**
+   * Accepts credential updates without persisting them; the OAuth client already
+   * holds the live token state in memory.
+   *
+   * @param _updates - Environment variable names and values (ignored).
+   * @returns An Effect that always succeeds.
+   *
+   * @example
+   * ```ts
+   * new EbayOAuthClient(config, new MemoryCredentialStore());
+   * ```
+   */
+  write(_updates: Record<string, string>): Effect.Effect<void, CredentialStoreError> {
+    return Effect.void;
+  }
+}
+
+/**
  * Redact token values for status and credential display output.
  *
  * @param token - Raw credential or token string.

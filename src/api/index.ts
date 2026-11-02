@@ -21,6 +21,7 @@ import { TranslationApi } from '@/api/other/translation.js';
 import { VeroApi } from '@/api/other/vero.js';
 import { TradingApiClient } from '@/api/clientTrading.js';
 import { TradingApi } from '@/api/trading/trading.js';
+import type { CredentialStore } from '@/auth/credentialSession.js';
 import type { EbayOAuthError } from '@/auth/oauth.js';
 import type { EbayConfig } from '@/types/ebay.js';
 import type { Effect } from 'effect';
@@ -28,6 +29,14 @@ import type { Effect } from 'effect';
 /**
  * Main API facade providing access to all eBay APIs
  */
+/**
+ * Optional collaborators for {@link EbaySellerApi}.
+ */
+export interface EbaySellerApiOptions {
+  /** Where refreshed tokens are persisted; defaults to the project `.env` file. */
+  credentialStore?: CredentialStore;
+}
+
 export class EbaySellerApi {
   private client: EbayApiClient;
   private readonly config: EbayConfig;
@@ -55,9 +64,9 @@ export class EbaySellerApi {
   public developer: DeveloperApi;
   public trading: TradingApi;
 
-  constructor(config: EbayConfig) {
+  constructor(config: EbayConfig, options: EbaySellerApiOptions = {}) {
     this.config = config;
-    this.client = new EbayApiClient(config);
+    this.client = new EbayApiClient(config, options.credentialStore);
 
     // Initialize API category handlers
     this.account = new AccountApi(this.client);

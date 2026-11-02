@@ -1,3 +1,4 @@
+import type { CredentialStore } from '@/auth/credentialSession.js';
 import { EbayOAuthClient, type EbayOAuthError } from '@/auth/oauth.js';
 import { clientRequestError, type EbayClientRequestError } from '@/api/clientRequestError.js';
 import { RateLimitTracker } from '@/api/rateLimitTracker.js';
@@ -105,9 +106,9 @@ export class EbayApiClient {
     return headers;
   }
 
-  constructor(config: EbayConfig) {
+  constructor(config: EbayConfig, credentialStore?: CredentialStore) {
     this.config = config;
-    this.authClient = new EbayOAuthClient(config);
+    this.authClient = new EbayOAuthClient(config, credentialStore);
     this.baseUrl = getBaseUrl(config.environment, config.apiBaseUrl);
     this.rateLimitTracker = new RateLimitTracker();
   }

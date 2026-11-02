@@ -6,6 +6,7 @@ import {
   getAuthServerMetadataUrl,
   getHttpServerUrl,
   type HttpTransportConfig,
+  normalizeMcpPath,
 } from '@/mcp/httpTransport.js';
 import process from 'node:process';
 
@@ -167,5 +168,90 @@ describe('HTTP MCP transport', () => {
 
     expect(response.status).toBe(200);
     expect(response.body).toMatchObject({ status: 'healthy' });
+  });
+
+  it('normalizes MCP paths', () => {
+    expect(normalizeMcpPath(undefined)).toBe('/');
+    expect(normalizeMcpPath('')).toBe('/');
+    expect(normalizeMcpPath('mcp/')).toBe('/mcp');
+    expect(normalizeMcpPath('//v1/mcp')).toBe('/v1/mcp');
+  });
+
+  it('reads MCP_PATH and MCP_SESSION_IDLE_TIMEOUT_MS from env', () => {
+    const config = createHttpTransportConfigFromEnv({
+      MCP_PATH: 'mcp',
+      MCP_SESSION_IDLE_TIMEOUT_MS: '900000',
+    });
+
+    expect(config.mcpPath).toBe('/mcp');
+    expect(config.sessionIdleTimeoutMs).toBe(900_000);
+    expect(createHttpTransportConfigFromEnv({}).sessionIdleTimeoutMs).toBeUndefined();
+  });
+
+  it('serves MCP on a custom path only', async () => {
+    const app = await createHttpMcpApp(createTestConfig({ mcpPath: '/mcp' }));
+
+    expect((await request(app).get('/mcp')).body).toMatchObject({ error: 'invalid_session' });
+    expect((await request(app).get('/')).status).toBe(404);
+  });
+
+  describe('per-session eBay credentials', () => {
+    const initialize = {
+      jsonrpc: '2.0',
+      id: 1,
+      method: 'initialize',
+      params: {
+        protocolVersion: '2025-06-18',
+        capabilities: {},
+        clientInfo: { name: 'test-client', version: '1.0.0' },
+      },
+    };
+
+    it('rejects the session with 400 when the resolver throws', async () => {
+      const app = await createHttpMcpApp(
+        createTestConfig({
+          resolveSessionEbayConfig: () => {
+            throw new Error('Missing x-ebay-client-id header');
+          },
+        }),
+      );
+
+      const response = await request(app)
+        .post('/')
+        .set('Accept', 'application/json, text/event-stream')
+        .send(initialize);
+
+      expect(response.status).toBe(400);
+      expect(response.body.error.message).toContain('Missing x-ebay-client-id header');
+    });
+
+    it('builds the session from request headers and advertises overridden branding', async () => {
+      const seen: (string | undefined)[] = [];
+      const app = await createHttpMcpApp(
+        createTestConfig({
+          serverInfo: { name: 'hosted-ebay', title: 'Hosted eBay MCP' },
+          resolveSessionEbayConfig: (req) => {
+            const clientId = req.headers['x-ebay-client-id'];
+            seen.push(typeof clientId === 'string' ? clientId : undefined);
+            return {
+              clientId: String(clientId),
+              clientSecret: 'session-secret',
+              environment: 'sandbox',
+            };
+          },
+        }),
+      );
+
+      const response = await request(app)
+        .post('/')
+        .set('Accept', 'application/json, text/event-stream')
+        .set('x-ebay-client-id', 'session-client')
+        .send(initialize);
+
+      expect(response.status).toBe(200);
+      expect(response.headers['mcp-session-id']).toEqual(expect.any(String));
+      expect(response.text).toContain('hosted-ebay');
+      expect(seen).toEqual(['session-client']);
+    });
   });
 });

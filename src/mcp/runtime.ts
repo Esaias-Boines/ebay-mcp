@@ -19,6 +19,21 @@ import { Effect } from 'effect';
 type ToolArgs = Record<string, unknown>;
 
 /**
+ * Outcome of one eBay tool call, reported to {@link EbayMcpRuntimeOptions.onToolCall}.
+ */
+export interface ToolCallEvent {
+  /** Registered tool name, e.g. `ebay_get_inventory_items`. */
+  name: string;
+  /** False when the tool returned an error result. */
+  ok: boolean;
+  /** Wall-clock duration of the handler in milliseconds. */
+  durationMs: number;
+}
+
+/** Observer invoked after every eBay tool call (metering, billing, analytics). */
+export type ToolCallObserver = (event: ToolCallEvent) => void | Promise<void>;
+
+/**
  * Optional dependencies and metadata for constructing the eBay MCP runtime.
  */
 export interface EbayMcpRuntimeOptions {
@@ -28,6 +43,11 @@ export interface EbayMcpRuntimeOptions {
   serverConfig?: Implementation;
   /** Enables debug/error logs for each tool call when true. */
   logToolExecution?: boolean;
+  /**
+   * Called after each eBay tool call completes. Failures inside the observer are
+   * logged and never change the tool result. Discovery meta-tools are not reported.
+   */
+  onToolCall?: ToolCallObserver;
 }
 
 /**
@@ -67,12 +87,30 @@ function formatToolFailure(error: unknown) {
   };
 }
 
+function notifyToolCall(observer: ToolCallObserver, event: ToolCallEvent): Promise<void> {
+  return Effect.runPromise(
+    Effect.tryPromise({
+      try: () => Promise.resolve(observer(event)),
+      catch: (error) => error,
+    }).pipe(
+      Effect.catchAll((error) =>
+        Effect.sync(() => {
+          toolLogger.error(`onToolCall observer failed for ${event.name}`, {
+            error: getErrorMessage(error),
+          });
+        }),
+      ),
+    ),
+  );
+}
+
 function registerTool(
   server: McpServer,
   api: EbaySellerApi,
   entry: ToolEntry,
   logToolExecution: boolean,
   ui: UiBridge,
+  onToolCall?: ToolCallObserver,
 ): RegisteredTool {
   const { definition, handler } = entry;
 
@@ -89,7 +127,8 @@ function registerTool(
         toolLogger.debug(`Executing tool: ${definition.name}`, { args });
       }
 
-      return await Effect.runPromise(
+      const startedAt = Date.now();
+      const toolResult = await Effect.runPromise(
         Effect.tryPromise({
           try: () => Promise.resolve(handler(api, args)),
           catch: (error) => error,
@@ -114,6 +153,16 @@ function registerTool(
           }),
         ),
       );
+
+      if (onToolCall) {
+        await notifyToolCall(onToolCall, {
+          name: definition.name,
+          ok: !('isError' in toolResult && toolResult.isError === true),
+          durationMs: Date.now() - startedAt,
+        });
+      }
+
+      return toolResult;
     },
   );
 
@@ -170,7 +219,7 @@ export const createEbayMcpRuntime = (options: EbayMcpRuntimeOptions = {}): EbayM
   for (const entry of entries) {
     handles.set(
       entry.definition.name,
-      registerTool(server, api, entry, options.logToolExecution ?? false, ui),
+      registerTool(server, api, entry, options.logToolExecution ?? false, ui, options.onToolCall),
     );
   }
 
